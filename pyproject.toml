@@ -1,0 +1,42 @@
+[project]
+name = "token-center-workspace"
+version = "0.1.0"
+description = "LLM FinOps Gateway monorepo"
+requires-python = ">=3.13,<3.14"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "mypy==2.3.1",
+  "pytest==9.1.1",
+  "ruff==0.16.8",
+]
+
+[tool.uv.workspace]
+members = [
+  "apps/control-api",
+  "packages/policy-engine",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+testpaths = ["packages/policy-engine/tests", "apps/control-api/tests", "tests"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+src = ["apps/control-api/src", "packages/policy-engine/src"]
+extend-exclude = [".venv-*"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+mypy_path = ["apps/control-api/src", "packages/policy-engine/src"]
+packages = ["control_api", "policy_engine"]
+
+[[tool.mypy.overrides]]
+module = "asyncpg"
+ignore_missing_imports = true

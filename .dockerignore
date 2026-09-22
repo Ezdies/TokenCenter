@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+.uv-cache
+**/__pycache__
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+apps/dashboard-angular/.angular
+apps/dashboard-angular/dist
+apps/dashboard-angular/node_modules
+.env
+

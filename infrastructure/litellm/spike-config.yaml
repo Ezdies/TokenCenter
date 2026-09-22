@@ -1,0 +1,20 @@
+model_list:
+  - model_name: auto
+    litellm_params:
+      model: openai/spike-free
+      api_base: http://mock-llm:8080/v1
+      api_key: mock-spike-key
+  - model_name: auto
+    litellm_params:
+      model: openai/spike-paid
+      api_base: http://mock-llm:8080/v1
+      api_key: mock-spike-key
+
+router_settings:
+  routing_strategy: simple-shuffle
+  plugins:
+    - policy_engine.litellm_plugin.spike_policy_router
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+

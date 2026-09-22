@@ -1,0 +1,8 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Fixed non-secret used only by the isolated LiteLLM spike"
+regexTarget = "match"
+regexes = ['''sk-local-development-only''']
+

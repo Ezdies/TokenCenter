@@ -1,0 +1,23 @@
+[project]
+name = "control-api"
+version = "0.1.0"
+description = "TokenCenter administrative control plane"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "asyncpg==0.31.0",
+  "fastapi==0.141.1",
+  "policy-engine",
+  "pydantic==2.13.5",
+  "redis==8.1.0",
+  "uvicorn[standard]==0.37.0",
+]
+
+[tool.uv.sources]
+policy-engine = { workspace = true }
+
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/control_api"]

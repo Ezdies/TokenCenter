@@ -1,0 +1,34 @@
+name: token-center-spike
+
+services:
+  mock-llm:
+    image: ghcr.io/berriai/litellm:v1.101.0@sha256:d295634e09c648dcdb72c4cc2dd226f5fb87823a73e88cbbed6f205e4deb044b
+    entrypoint: ["python", "/spike/mock_server.py"]
+    volumes:
+      - ../../apps/mock-llm/mock_server.py:/spike/mock_server.py:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.101.0@sha256:d295634e09c648dcdb72c4cc2dd226f5fb87823a73e88cbbed6f205e4deb044b
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      LITELLM_MASTER_KEY: sk-local-development-only
+      PYTHONPATH: /app/token-center
+    volumes:
+      - ../litellm/spike-config.yaml:/app/config.yaml:ro
+      - ../../packages/policy-engine/src:/app/token-center:ro
+    ports:
+      - "127.0.0.1:4000:4000"
+    depends_on:
+      mock-llm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
