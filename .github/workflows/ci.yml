@@ -27,6 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - run: docker compose config --quiet
+      - run: docker compose --profile observability config --quiet
       - run: docker compose -f infrastructure/docker/compose.spike.yml config --quiet
 
   litellm-spike:

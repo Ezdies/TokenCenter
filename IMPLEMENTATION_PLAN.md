@@ -243,13 +243,13 @@ Każdy etap kończy się działającym testem i osobnym małym commitem. Nie zac
 - [x] Przełączyć Caddy `/v1/*` na Agent Gateway; LiteLLM pozostawić wyłącznie w sieci wewnętrznej i zablokować bezpośredni port hosta.
 - [x] Dodać ADR-0003 dla wiążącej topologii proxy-first i oznaczyć ADR-0001 jako superseded.
 - [x] Zmienić obraz PostgreSQL na wariant z pgvector oraz dodać idempotentne `CREATE EXTENSION vector` w kroku migracyjnym bazy gateway.
-- [ ] Langfuse uruchamiać profilem `observability`; użyć aktualnego oficjalnego zestawu zależności (nie legacy v2).
+- [x] Langfuse uruchamiać profilem `observability`; użyć aktualnego oficjalnego zestawu zależności (nie legacy v2).
 - [x] Health/readiness checks, trwałe named volumes, wewnętrzna sieć i minimalnie wystawione porty.
 - [x] `.env.example` bez prawdziwych sekretów oraz skrypt inicjalizujący bazy.
 - [x] `make up`, `make down` i `make smoke` dla obecnego stacku.
 - [ ] `make migrate` i `make seed` po dodaniu migracji domenowych w Etapie 2.
 
-**Postęp 2026-09-25:** zweryfikowano non-stream i stream przez `Caddy -> Agent Gateway -> LiteLLM -> mock`, nagłówek diagnostyczny Gatewaya, brak opublikowanego portu LiteLLM oraz pgvector `0.8.1` w istniejącym wolumenie PostgreSQL.
+**Postęp 2026-09-25:** zweryfikowano non-stream i stream przez `Caddy -> Agent Gateway -> LiteLLM -> mock`, nagłówek diagnostyczny Gatewaya, brak opublikowanego portu LiteLLM oraz pgvector `0.8.1` w istniejącym wolumenie PostgreSQL. Opcjonalny profil `observability` uruchamia przypięty Langfuse `4.46.0` z workerem, ClickHouse i MinIO; współdzielone PostgreSQL i Redis są odseparowane odpowiednio bazą `langfuse` i prefiksem `langfuse:`. Smoke test potwierdza gotowość web/worker oraz brak regresji inference.
 
 **Odbiór:** świeży checkout uruchamia stack jedną komendą; request przechodzi wyłącznie ścieżką `Caddy -> Agent Gateway -> LiteLLM -> mock`; bezpośredni LiteLLM jest niedostępny z hosta; migracje z `vector` są idempotentne, a restart zachowuje dane.
 

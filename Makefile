@@ -2,7 +2,7 @@ UV ?= uv
 COMPOSE ?= docker compose
 SPIKE_COMPOSE = infrastructure/docker/compose.spike.yml
 
-.PHONY: bootstrap check format lint test typecheck frontend-check up smoke ps logs down clean spike-up spike-test spike-down
+.PHONY: bootstrap check format lint test typecheck frontend-check up smoke ps logs down clean observability-up observability-smoke observability-down spike-up spike-test spike-down
 
 bootstrap:
 	$(UV) sync --all-packages --all-groups
@@ -45,6 +45,15 @@ down:
 
 clean:
 	$(COMPOSE) down --remove-orphans --volumes
+
+observability-up:
+	$(COMPOSE) --profile observability up -d --build --wait --remove-orphans
+
+observability-smoke:
+	./scripts/smoke-observability.sh
+
+observability-down:
+	$(COMPOSE) --profile observability down --remove-orphans
 
 spike-up:
 	$(COMPOSE) -f $(SPIKE_COMPOSE) up -d --wait

@@ -16,6 +16,12 @@ Następnie otwórz <http://127.0.0.1:8080>. Zatrzymanie stacku bez usuwania dany
 docker compose down --remove-orphans
 ```
 
+Aby uruchomić rdzeń razem z warstwą observability (Langfuse, worker, ClickHouse i MinIO), użyj:
+
+```bash
+docker compose --profile observability up -d --build --wait --remove-orphans
+```
+
 Pełna instrukcja, adresy usług i diagnostyka znajdują się w sekcji [Uruchomienie całego stacku przez Docker Compose](#uruchomienie-całego-stacku-przez-docker-compose).
 
 TokenCenter to rozwijana brama LLM FinOps. Specyfikacja znajduje się w
@@ -24,7 +30,7 @@ TokenCenter to rozwijana brama LLM FinOps. Specyfikacja znajduje się w
 
 ## Aktualny stan
 
-Zaimplementowany jest Etap 0 oraz proxy-first slice z Etapu 1:
+Zaimplementowany jest Etap 0 oraz kolejne proxy-first slice'y z Etapu 1:
 
 - FastAPI Agent Gateway jako publiczny data plane i szkielet Control API,
 - szkielet dashboardu Angular,
@@ -32,10 +38,11 @@ Zaimplementowany jest Etap 0 oraz proxy-first slice z Etapu 1:
 - wewnętrzny LiteLLM jako adapter providerów,
 - mock providera zgodny z OpenAI Chat Completions API,
 - PostgreSQL 18 z pgvector 0.8.1 oraz Redis z trwałymi wolumenami,
+- opcjonalny profil observability z Langfuse 4.46.0, workerem, ClickHouse i MinIO,
 - Caddy jako jeden publiczny punkt wejścia,
 - testy i konfiguracja CI.
 
-Główny `docker-compose.yml` uruchamia cały obecnie zaimplementowany stack. Langfuse nie jest jeszcze częścią domyślnego uruchomienia.
+Główny `docker-compose.yml` domyślnie uruchamia lekki rdzeń. Langfuse jest dostępny przez opcjonalny profil `observability`, dzięki czemu niedostępność systemu tracingowego nie blokuje inference.
 
 ## Wymagania
 
@@ -151,6 +158,36 @@ Jeżeli `make` jest dostępny, powyższe polecenia mają krótsze odpowiedniki:
 | `docker compose logs -f --tail=200` | `make logs` |
 | `docker compose down --remove-orphans` | `make down` |
 | `docker compose down --remove-orphans --volumes` | `make clean` |
+
+## Opcjonalny profil observability (Langfuse)
+
+Profil bazuje na bieżącej architekturze self-hosted Langfuse v4: osobnych procesach web i worker, ClickHouse oraz magazynie obiektowym MinIO. Wykorzystuje istniejące PostgreSQL i Redis, ale izoluje stan odpowiednio w bazie `langfuse` i kluczach z prefiksem `langfuse:`.
+
+Uruchomienie rdzenia wraz z observability:
+
+```bash
+docker compose --profile observability up -d --build --wait --remove-orphans
+./scripts/smoke-observability.sh
+```
+
+Równoważne skróty Makefile:
+
+```bash
+make observability-up
+make observability-smoke
+```
+
+Langfuse będzie dostępny pod <http://127.0.0.1:3000>. Przy pierwszym wejściu utwórz lokalnego użytkownika i organizację. MinIO wystawia endpoint mediów wyłącznie na loopback pod <http://127.0.0.1:9090>; ClickHouse, worker, PostgreSQL i Redis nie publikują portów na hoście.
+
+Zatrzymanie całego stacku bez usuwania danych:
+
+```bash
+make observability-down
+```
+
+Pierwszy start pobiera większe obrazy i wykonuje migracje Langfuse, dlatego może potrwać kilka minut. Dane Langfuse, ClickHouse i MinIO są zachowywane w named volumes. `make clean` usuwa również te wolumeny.
+
+Wartości `LANGFUSE_*` w `.env.example` są wyłącznie lokalnymi placeholderami. Przed uruchomieniem w środowisku współdzielonym ustaw losowe `LANGFUSE_NEXTAUTH_SECRET`, `LANGFUSE_SALT`, 64-znakowy hex `LANGFUSE_ENCRYPTION_KEY` oraz hasła ClickHouse i MinIO, a `LANGFUSE_NEXTAUTH_URL` dopasuj do publicznego adresu.
 
 ## Przygotowanie środowiska do pracy bezpośrednio na hoście
 
