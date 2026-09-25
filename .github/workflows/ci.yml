@@ -29,6 +29,19 @@ jobs:
       - run: docker compose config --quiet
       - run: docker compose -f infrastructure/docker/compose.spike.yml config --quiet
 
+  litellm-spike:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Start LiteLLM integration spike
+        run: make spike-up
+      - name: Verify policy plugin against mock provider
+        run: make spike-test
+      - name: Stop LiteLLM integration spike
+        if: always()
+        run: make spike-down
+
   frontend:
     runs-on: ubuntu-latest
     defaults:

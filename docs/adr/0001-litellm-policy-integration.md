@@ -1,6 +1,6 @@
 # ADR-0001: integracja Policy Engine z LiteLLM
 
-- Status: accepted for spike, production constraints pending
+- Status: superseded by ADR-0003
 - Date: 2026-09-22
 - LiteLLM: `v1.101.0`, image digest `sha256:d295634e09c648dcdb72c4cc2dd226f5fb87823a73e88cbbed6f205e4deb044b`
 
@@ -9,6 +9,8 @@
 Publiczny endpoint ma pozostać w LiteLLM, ale routing `model=auto` wymaga własnych filtrów capability, health, quota i budget oraz wyjaśnialnej decyzji. Starsze wydania Proxy nie oferowały stabilnego custom routingu. LiteLLM dodał router plugins w serii 1.94.
 
 ## Decision
+
+> Uwaga: poniższa decyzja dokumentuje wynik historycznego spike'a. Docelowa topologia została zmieniona na FastAPI Agent Gateway przed LiteLLM w ADR-0003.
 
 Używamy publicznego interfejsu `router_settings.plugins` z LiteLLM v1.101.0. Plugin jest pakietem Pythona ładowanym w procesie Proxy i implementuje:
 
@@ -47,4 +49,3 @@ Jeżeli którykolwiek warunek okaże się niemożliwy przy publicznym API plugin
 - Policy Engine musi być instalowany lub montowany w obrazie LiteLLM.
 - Aktualizacja LiteLLM wymaga uruchomienia contract testów pluginu.
 - Domena routingu nie może zależeć od typów LiteLLM; adapter pluginu tłumaczy `RoutingContext` na typy domenowe.
-

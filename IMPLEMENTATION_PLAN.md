@@ -1,4 +1,4 @@
-# LLM FinOps Gateway — plan implementacji
+# Agentic FinOps Gateway — plan implementacji
 
 Plan wykonawczy do specyfikacji [`llm-finops-gateway-implementation-guide.md`](./llm-finops-gateway-implementation-guide.md).
 Ma być krótkim źródłem kontekstu dla kolejnych sesji implementacyjnych. Szczegóły produktu pozostają w specyfikacji; tutaj są decyzje, kolejność prac, kontrakty i kryteria odbioru.
@@ -7,19 +7,19 @@ Ma być krótkim źródłem kontekstu dla kolejnych sesji implementacyjnych. Szc
 
 ### Cel MVP
 
-Udostępnić jeden endpoint zgodny z OpenAI, który dla `model=auto` wybiera zdrowy model z rejestru, preferuje wariant darmowy, respektuje budżet i wymagane capabilities, korzysta z exact cache, wykonuje fallback oraz zapisuje pełne uzasadnienie decyzji i telemetrykę. Administrator zarządza providerami, modelami i budżetami przez Control API oraz podstawowy dashboard Angular.
+Udostępnić jeden endpoint zgodny z OpenAI, zoptymalizowany pod ruch agentowy. Stanowy FastAPI Agent Gateway przed LiteLLM ma przycinać bezpieczne fragmenty kontekstu, wykrywać pętle wywołań narzędzi, obsługiwać exact i semantic cache, egzekwować budżet oraz wybierać politykę free-first. LiteLLM pozostaje bezstanowym adapterem protokołów i wykonawcą retry/fallback do providerów. Każda optymalizacja ma być mierzalna w ledgerze i widoczna w dashboardzie Angular.
 
 ### Kolejność priorytetów
 
-1. Niezawodność i poprawność routingu.
-2. Obserwowalność i możliwość wyjaśnienia decyzji.
-3. Egzekwowanie budżetów.
-4. Cache i optymalizacja kosztu.
-5. Ergonomia dashboardu.
+1. Bezpieczeństwo transformacji promptu i poprawność odpowiedzi.
+2. Niezawodność, ochrona przed pętlami i poprawność routingu.
+3. Obserwowalność oraz możliwość wyjaśnienia oszczędności i decyzji.
+4. Egzekwowanie budżetów bez wyścigów i sierocych rezerwacji.
+5. Cache i ergonomia dashboardu.
 
 ### Poza MVP
 
-Semantic cache, RAG, streszczanie rozmów, trial-aware scoring, automatyczna ocena jakości, wielostopniowa eskalacja jakościowa, batching, Kubernetes, lokalne modele, rozbudowany RBAC i zewnętrzny secrets manager. Struktura kodu i bazy ma pozwalać je dodać, ale MVP nie implementuje atrap tych funkcji.
+RAG, automatyczne streszczanie rozmów, trial-aware scoring, automatyczna ocena jakości, wielostopniowa eskalacja jakościowa, batching, Kubernetes, lokalne modele, rozbudowany RBAC i zewnętrzny secrets manager. Trimming deterministyczny i semantic cache o ograniczonej kwalifikacji należą do MVP; generatywne podsumowania pozostają poza MVP.
 
 ## 2. Decyzje architektoniczne
 
@@ -28,39 +28,42 @@ Semantic cache, RAG, streszczanie rozmów, trial-aware scoring, automatyczna oce
 ```text
 client
   -> Caddy /v1/*
-  -> LiteLLM Proxy (auth, virtual keys, zgodność OpenAI, provider adapters)
-  -> Policy Engine (wybór deploymentu, health, budget, powód decyzji)
+  -> FastAPI Agent Gateway (auth context, trimming, loop protection,
+                            exact/semantic cache, budget lease, routing policy)
+  -> LiteLLM Proxy (provider adapters, retry, fallback, usage dla virtual keys)
   -> provider
 
 admin browser
   -> Caddy /api/*
-  -> FastAPI Control API
+  -> FastAPI Agent Gateway / Control API
   -> PostgreSQL / Redis
 ```
 
-- LiteLLM jest publicznym data plane dla `/v1/*`.
-- FastAPI jest control plane i nie znajduje się na krytycznej ścieżce inference.
-- Policy Engine jest osobnym pakietem Pythona ładowanym przez rozszerzenie routingu LiteLLM. Nie wykonuje HTTP do Control API przy każdym żądaniu.
-- Konfiguracja trwała pochodzi z PostgreSQL. Policy Engine używa krótkotrwałego snapshotu w pamięci/Redis i unieważnia go po zmianach przez Control API.
-- Redis przechowuje cache, rate/quota counters, health i locki; utrata Redis nie może utracić konfiguracji.
+- FastAPI Agent Gateway jest jedynym publicznym data plane dla `/v1/*` i jednocześnie wystawia Control API pod `/api/*` (moduły pozostają rozdzielone w kodzie).
+- Caddy kończy TLS, stosuje limity sieciowe/rozmiaru i routuje `/v1/*` oraz `/api/*`; limity per tenant/key pozostają w Gatewayu.
+- LiteLLM nie jest wystawiony publicznie. Jest bezstanowym downstreamem odpowiedzialnym za translację protokołów, provider adapters, retry, fallback, circuit breakers oraz raportowanie usage dla virtual keys.
+- Policy Engine jest czystym pakietem domenowym używanym bezpośrednio przez Agent Gateway. Nie jest ładowany jako hook LiteLLM i nie wykonuje HTTP do Control API przy każdym żądaniu.
+- Gateway musi uwierzytelnić i zautoryzować request przed każdym cache lookup; tożsamość virtual key/tenant jest mapowana na stabilny `key_id` i przekazywana do LiteLLM. Cache hit nie może omijać auth, rate limitu ani budget accounting.
+- Konfiguracja trwała pochodzi z PostgreSQL. Gateway używa krótkotrwałego snapshotu w pamięci/Redis i unieważnia go po zmianach przez Control API.
+- PostgreSQL działa z rozszerzeniem `vector`; przechowuje embeddingi semantic cache. Redis przechowuje exact cache, rate/quota counters, health, locki, okna detekcji pętli i dzierżawy budżetu; utrata Redis nie może utracić konfiguracji ani zaksięgowanego usage.
 - Langfuse służy wyłącznie do trace'ów i analiz, nigdy jako źródło konfiguracji.
 - Dashboard nie łączy się bezpośrednio z bazą, Redisem ani LiteLLM admin API.
 
-### Obowiązkowy spike przed właściwym kodem
+### Obowiązkowy spike topologii proxy-first
 
-API rozszerzeń LiteLLM zmienia się między wersjami. Najpierw przypiąć wersję i potwierdzić testem integracyjnym, że własny hook/strategia może:
+Przed rozwijaniem domeny potwierdzić testem integracyjnym pełny przepływ `Caddy -> Agent Gateway -> LiteLLM -> mock provider`:
 
-1. odczytać virtual key/user/tenant i żądany alias,
-2. odfiltrować deployments oraz wybrać konkretny model,
-3. dodać metadata decyzji do callbacku Langfuse,
-4. obsłużyć fallback bez podwójnego naliczania użycia,
-5. zachować streaming i błędy zgodne z OpenAI.
+1. Gateway waliduje tożsamość, zachowuje OpenAI request/response shape i przekazuje wybrany deployment do LiteLLM.
+2. LiteLLM wykonuje retry/fallback bez powrotu do modelu wykluczonego przez politykę Gatewaya.
+3. Metadata decyzji i optymalizacji docierają do callbacku Langfuse, a usage nie jest naliczane podwójnie.
+4. Streaming, disconnect klienta i błędy zachowują kontrakt OpenAI przez obie warstwy.
+5. LiteLLM nie jest osiągalny z sieci publicznej, a cache hit nie omija auth, rate limitu ani wpisu w ledgerze.
 
-Wynik opisać w `docs/adr/0001-litellm-policy-integration.md`. Jeśli rozszerzenie przypiętej wersji nie daje tych gwarancji, przyjąć jeden fallback architektoniczny: cienki FastAPI data-plane przed LiteLLM. Nie utrzymywać dwóch ścieżek inference.
+Decyzję opisuje ADR-0003; ADR-0001 pozostaje zapisem historycznego spike'a i jest superseded. Nie utrzymywać alternatywnej ścieżki inference przez publiczny LiteLLM.
 
 ### Granice danych
 
-- W środowisku lokalnym jeden serwer PostgreSQL może hostować osobne bazy: `gateway`, `litellm` i zależności Langfuse. Schematów aplikacji nie mieszać.
+- W środowisku lokalnym jeden serwer PostgreSQL z obrazem zawierającym pgvector może hostować osobne bazy: `gateway`, `litellm` i zależności Langfuse. Rozszerzenie `vector` włączyć migracją tylko w bazie `gateway`; schematów aplikacji nie mieszać.
 - Redis otrzymuje osobne prefixy/DB dla gatewaya i zewnętrznych usług.
 - Wszystkie rekordy domenowe mają UUID, `created_at`, `updated_at`; konfiguracja modyfikowalna ma `version` do optimistic locking.
 - `tenant_id` istnieje od pierwszej migracji na kluczach, budżetach, politykach i wpisach cache, nawet jeśli MVP ma jeden tenant.
@@ -70,13 +73,13 @@ Wynik opisać w `docs/adr/0001-litellm-policy-integration.md`. Jeśli rozszerzen
 
 ```text
 apps/
-  control-api/                 # FastAPI: CRUD, dashboard queries, cache ops
+  agent-gateway/               # FastAPI: publiczne /v1 + Control API /api
   dashboard-angular/           # standalone components, lazy routes, strict TS
 packages/
-  policy-engine/               # czysta domena: filtering, scoring, decision log
+  policy-engine/               # czysta domena: pruning, loops, routing, decision log
   model-registry/              # repozytoria i snapshot konfiguracji
-  cache/                       # canonicalizacja, exact cache, namespace/TTL
-  telemetry/                   # trace metadata, koszt, redaction
+  cache/                       # exact + semantic eligibility/search, namespace/TTL
+  telemetry/                   # trace metadata, koszt, oszczędności, redaction
 infrastructure/
   docker/
   litellm/config.yaml
@@ -108,13 +111,14 @@ Python: jedna wersja zadeklarowana w repo, `uv`, FastAPI, Pydantic, SQLAlchemy a
 2. `providers`: typ, base URL, `secret_ref`, priorytet, limity, status administracyjny.
 3. `models`: provider, provider model ID, logical tier, ceny, limity kontekstu/outputu, capability flags, quality/latency/reliability score, priority, weight, enabled.
 4. `routing_policies`: tenant, nazwa, start/fallback tier, prefer-free, limity kosztu i tokenów, wymagania jakości/latency, wagi scoringu, enabled, version.
-5. `api_key_metadata`: tenant, hash/fingerprint identyfikatora, owner, status; sekret/autoryzację pozostawić LiteLLM.
+5. `api_key_metadata`: tenant, hash/fingerprint klucza, owner, status i mapowanie do `litellm_virtual_key_id`. Agent Gateway jest autorytatywnym verifierem publicznego klucza przed cache; do LiteLLM przekazuje wyłącznie wewnętrzne uwierzytelnienie i stabilną identyfikację billingową.
 6. `budgets`: scope type/id, period, limit USD, warning threshold, hard-stop mode.
-7. `usage_ledger`: trace/request ID, scope, provider/model/tier, tokeny, koszt, cache status, status końcowy, timestamp. Służy do egzekwowania i dashboardu; Langfuse nie jest źródłem budżetu.
+7. `usage_ledger`: partycjonowany miesięcznie po `occurred_at`; trace/request/attempt ID, scope, provider/model/tier, actual tokens/cost, `raw_prompt_tokens`, `pruned_prompt_tokens`, `saved_tokens_count`, `estimated_cost_saved`, cache status/type, `optimization_flags`, status końcowy i timestamp. Służy do egzekwowania i dashboardu; Langfuse nie jest źródłem budżetu.
 8. `provider_health_events`: wynik checku, latency, kod błędu, timestamp. Bieżący stan jest zmaterializowany w Redisie.
 9. `audit_log`: actor, action, entity type/id, before/after z redakcją sekretów, timestamp.
+10. `semantic_cache_entries`: tenant/namespace, hash źródła, embedding `vector(n)`, odpowiedź lub bezpieczny odnośnik, model embeddingowy i jego wersja, próg podobieństwa, policy/source version, `created_at`/`expires_at`. Indeks wektorowy dobrać po pomiarze; dla małego MVP dopuszczalny exact scan.
 
-Późniejsze migracje dodadzą trial credits, sesje, dokumenty/chunki/embeddingi, cache policies i ewaluacje jakości.
+Późniejsze migracje dodadzą trial credits, trwałe sesje, dokumenty/chunki RAG, rozbudowane cache policies i ewaluacje jakości.
 
 ### Typy domenowe
 
@@ -122,17 +126,34 @@ Późniejsze migracje dodadzą trial credits, sesje, dokumenty/chunki/embeddingi
 - `CapabilitySet`: tools, JSON, vision, audio, reasoning, embeddings, streaming oraz minimalne context/output tokens.
 - `HealthState`: healthy, degraded, rate_limited, disabled, down.
 - `RoutingDecision`: request/trace ID, policy/version, kandydaci odrzuceni z powodami, ranking i składowe score, wybrany model, fallback chain.
-- `UsageRecord`: estymowane i rzeczywiste tokeny, ceny użyte do obliczeń, actual/reference cost, retry/fallback count i cache status.
+- `UsageRecord`: surowe/przycięte/rzeczywiste tokeny, ceny użyte do obliczeń, actual/reference/saved cost, retry/fallback count, cache status/type i flagi optymalizacji (`TOOL_PRUNED`, `CONTEXT_PRUNED`, `LOOP_BLOCKED`, `EXACT_HIT`, `SEMANTIC_HIT`).
 
 ## 5. Kontrakt routingu MVP
 
 Pipeline jest deterministyczny i testowalny etapami:
 
 ```text
-auth -> rate/budget pre-check -> exact cache -> classify/detect capabilities
--> estimate tokens -> load registry snapshot -> hard filters
--> score/rank -> execute -> validate -> fallback -> usage/trace/cache -> response
+auth -> rate limit -> session/loop check -> raw token estimate
+-> deterministic pruning -> exact cache -> semantic-cache eligibility/lookup
+-> classify/detect capabilities -> registry snapshot -> hard filters -> score/rank
+-> acquire budget lease -> LiteLLM execute/retry/fallback -> validate
+-> settle/release lease -> cache write -> ledger/trace -> response
 ```
+
+Kolejność jest kontraktem: cache działa na bezpiecznie przyciętym wejściu, lecz po auth i loop protection; żadna odpowiedź cache nie omija ledgeru. Dla streamingu lease rozliczyć po finalnym usage lub zwolnić po timeout/disconnect zgodnie z idempotentną procedurą odzyskiwania.
+
+### Trimming i pruning
+
+- Najpierw policzyć `raw_prompt_tokens`, a po transformacji `pruned_prompt_tokens`; różnica tworzy `saved_tokens_count`.
+- MVP usuwa tylko treści sklasyfikowane przez deterministyczne reguły: stare, zastąpione wyniki narzędzi, nadmiarowy HTML i historyczny JSON poza skonfigurowanym limitem. System prompt, ostatnie wiadomości, aktywne argumenty/results tool calls oraz dane wymagane przez bieżące zadanie są chronione.
+- Każda transformacja zapisuje typ reguły, hash przed/po i liczbę tokenów. Pełny diff promptu jest domyślnie wyłączony; jeśli tenant go włączy, podlega redakcji, szyfrowaniu, RBAC i krótkiemu TTL.
+- Jeżeli transformacja nie może dowieść zachowania spójności par `tool_call`/`tool_result`, wykonuje bypass zamiast modyfikacji.
+
+### Ochrona przed pętlami
+
+- Gateway wymaga lub wyprowadza stabilny `session_id`; brak identyfikatora wyłącza detekcję między requestami i jest jawnie raportowany.
+- Kanoniczny hash obejmuje nazwę narzędzia, znormalizowane argumenty i istotny stan/kod wyniku, bez sekretów. Redis przechowuje krótkie okno pod `loop_protection:{tenant_id}:{session_id}` z TTL.
+- Polityka określa próg identycznych wywołań oraz naprzemienne wzorce A/B. Przekroczenie progu zwraca kontrolowany błąd zgodny z OpenAI, zapisuje `LOOP_BLOCKED` i alert; nie trafia do LiteLLM ani providera.
 
 ### Twarde filtry, zawsze przed scoringiem
 
@@ -165,6 +186,19 @@ MVP dostarcza profile `economy` i `balanced`. `prefer_free` daje darmowym kandyd
 - TTL zależy od task type; wpis zawiera schema version i policy version.
 - Awaria Redis: bypass cache i kontynuacja, ale awaria atomicznego budget countera działa fail-closed dla płatnego modelu.
 
+### Semantic cache
+
+- Lookup następuje po exact cache, wyłącznie dla polityk z jawnym opt-in i zapytań bez aktywnych tool calls, side effects, danych czasowych oraz prywatnych danych wykraczających poza tenant namespace.
+- Embedding i wyszukiwanie odbywają się w PostgreSQL + pgvector; wpis wiąże wersję modelu embeddingowego, polityki, źródła i próg podobieństwa. Wynik po TTL lub zmianie którejkolwiek wersji jest miss.
+- Hit musi przejść kontrolę freshness i compatibility (task, response format, locale/capabilities). Zapisuje `SEMANTIC_HIT`, similarity score, ominięty model i konserwatywnie oszacowany koszt uniknięty.
+- Awaria pgvector lub usługi embeddingowej daje bypass do routingu, nie błąd requestu. Semantic cache nie obsługuje streamingu w MVP, dopóki test kontraktowy nie potwierdzi poprawnego odtwarzania chunków.
+
+### Dzierżawa budżetu
+
+- Przed płatnym wywołaniem atomowo rezerwować estymowany koszt w `budget_lease:{tenant_id}:{key_id}:{request_id}` z TTL 60 s oraz licznikiem scope. Lease ma `lease_id` i stan pozwalający na idempotentne settle/release.
+- Po odpowiedzi rozliczyć actual cost i zwolnić różnicę; retry/fallback należą do tego samego requestu, lecz każda próba ma osobny `attempt_id` w ledgerze.
+- Worker reconciliacyjny wykrywa wygasłe lease'y i porównuje je z ledgerem. Awaria Redisa działa fail-closed dla płatnego ruchu, ale może dopuścić model faktycznie darmowy.
+
 ## 6. Kontrakty API
 
 ### Publiczne inference API
@@ -179,6 +213,7 @@ MVP dostarcza profile `economy` i `balanced`. `prefer_free` daje darmowym kandyd
 - CRUD: `/providers`, `/models`, `/policies`, `/budgets`.
 - Operacje: `/providers/{id}/enable|disable`, `/models/{id}/enable|disable`, `/providers/{id}/health-check`.
 - Odczyty: `/dashboard/overview`, `/dashboard/costs`, `/dashboard/providers`, `/traces/{trace_id}/decision`.
+- Agent FinOps: `/dashboard/savings`, `/traces/{trace_id}/pruning`, `/loop-alerts`.
 - Cache: `/cache/stats`, `/cache/purge` z filtrem namespace; purge jest audytowany.
 - Playground: `/playground/chat`, dostępny tylko dla admina, deleguje do publicznego inference API.
 - Listy mają pagination/filter/sort. Zmiany wymagają `version`/ETag i tworzą audit event.
@@ -189,7 +224,7 @@ OpenAPI jest kontraktem: CI generuje schemat i sprawdza, czy Angularowy typed cl
 
 Każdy etap kończy się działającym testem i osobnym małym commitem. Nie zaczynać następnego etapu przy czerwonym CI.
 
-### Etap 0 — bootstrap i ADR (ukończony)
+### Etap 0 — bootstrap i historyczny spike (ukończony)
 
 - [x] Utworzyć strukturę monorepo, konfigurację Python/Angular, lint/test/typecheck oraz `Makefile`.
 - [x] Przypiąć wersje zależności i obrazów; udokumentować minimalne wymagania Docker/Node/Python.
@@ -197,17 +232,23 @@ Każdy etap kończy się działającym testem i osobnym małym commitem. Nie zac
 - [x] Dodać ADR-0002: własność danych i granice LiteLLM/gateway/Langfuse.
 - [x] Dodać CI: backend unit/integration, frontend format/test/build, Compose config validation, secret scan.
 
-**Odbiór:** czyste repo przechodzi lokalnie `make check`; smoke request przez LiteLLM dociera do mock providera.
+**Odbiór:** czyste repo przechodzi lokalnie `make check`; historyczny smoke request przez LiteLLM dociera do mock providera. Ten test nie potwierdza jeszcze docelowej topologii.
 
-### Etap 1 — lokalna infrastruktura (w toku)
+**Weryfikacja 2026-09-25:** `make check`, oba `docker compose ... config --quiet`, Gitleaks oraz sekwencja `make spike-up && make spike-test && make spike-down` zakończone powodzeniem. CI uruchamia ten sam spike jako osobny job z cleanupem `if: always()`.
 
-- [x] Compose: Caddy, LiteLLM, Control API, dashboard, PostgreSQL, Redis i mock LLM.
+### Etap 1 — migracja do Agent Gateway i lokalna infrastruktura (w toku)
+
+- [x] Bazowy Compose: Caddy, LiteLLM, Control API, dashboard, PostgreSQL, Redis i mock LLM.
+- [ ] Przekształcić `apps/control-api` w `apps/agent-gateway` (lub zachować ścieżkę przejściowo, lecz zmienić nazwę modułu/usługi) i dodać passthrough `/v1/chat/completions` oraz `/v1/models`.
+- [ ] Przełączyć Caddy `/v1/*` na Agent Gateway; LiteLLM pozostawić wyłącznie w sieci wewnętrznej i zablokować bezpośredni port hosta.
+- [x] Dodać ADR-0003 dla wiążącej topologii proxy-first i oznaczyć ADR-0001 jako superseded.
+- [ ] Zmienić obraz PostgreSQL na wariant z pgvector oraz dodać idempotentne `CREATE EXTENSION vector` w migracji bazy gateway.
 - [ ] Langfuse uruchamiać profilem `observability`; użyć aktualnego oficjalnego zestawu zależności (nie legacy v2).
 - [x] Health/readiness checks, trwałe named volumes, wewnętrzna sieć i minimalnie wystawione porty.
 - [x] `.env.example` bez prawdziwych sekretów oraz skrypt inicjalizujący bazy.
 - [ ] `make up`, `make down`, `make migrate`, `make seed`, `make smoke` (`up`, `down` i `smoke` gotowe; migracje i seed należą do Etapu 2).
 
-**Odbiór:** świeży checkout uruchamia stack jedną komendą, migracje są idempotentne, restart zachowuje dane.
+**Odbiór:** świeży checkout uruchamia stack jedną komendą; request przechodzi wyłącznie ścieżką `Caddy -> Agent Gateway -> LiteLLM -> mock`; bezpośredni LiteLLM jest niedostępny z hosta; migracje z `vector` są idempotentne, a restart zachowuje dane.
 
 ### Etap 2 — registry i Control API
 
@@ -219,7 +260,17 @@ Każdy etap kończy się działającym testem i osobnym małym commitem. Nie zac
 
 **Odbiór:** contract tests CRUD; wyłączenie modelu zmienia snapshot routera bez restartu.
 
-### Etap 3 — Policy Engine i `model=auto`
+### Etap 3 — agentowy pre-processing i ochrona pętli
+
+- [ ] Stabilny kontrakt `session_id`, kanoniczny hash tool call i okno Redis `loop_protection:*` z TTL.
+- [ ] Detekcja powtórzeń i wzorca A/B, kontrolowany błąd OpenAI oraz alert `LOOP_BLOCKED`.
+- [ ] Deterministyczny pruner dla starych tool outputs, HTML i JSON z ochroną spójności historii.
+- [ ] Liczenie raw/pruned/saved tokens oraz dziennik reguł bez pełnej treści promptu domyślnie.
+- [ ] Feature flags i per-policy bypass/limity, aby każdą transformację można było bezpiecznie wyłączyć.
+
+**Odbiór:** golden tests dowodzą, że pruning nie rozrywa par tool-call/result ani chronionych wiadomości; powtarzana pętla zostaje zatrzymana przed LiteLLM, a niezależne sesje/tenanty nie współdzielą stanu.
+
+### Etap 4 — Policy Engine i `model=auto`
 
 - [ ] Czyste funkcje: klasyfikacja regułowa, capability detection, konserwatywna estymacja tokenów, hard filters, scoring i tie-break.
 - [ ] Profile `economy` i `balanced` oraz aliasy `auto`, `free`, `cheap`, `fast`, `smart`, `coding`, `reasoning`, `vision`, `long-context`.
@@ -229,7 +280,7 @@ Każdy etap kończy się działającym testem i osobnym małym commitem. Nie zac
 
 **Odbiór:** testy tabelaryczne pokrywają capabilities, context limit, health, budget, free-first, remisy i brak kandydatów; żaden provider/model nie jest zaszyty w kodzie domenowym.
 
-### Etap 4 — fallback, health i niezawodność
+### Etap 5 — fallback, health i niezawodność
 
 - [ ] Klasyfikacja błędów retryable/non-retryable i ograniczony retry budget.
 - [ ] Fallback chain tworzony z rankingu, bez ponownego użycia odrzuconego deploymentu.
@@ -239,27 +290,30 @@ Każdy etap kończy się działającym testem i osobnym małym commitem. Nie zac
 
 **Odbiór:** fault-injection dla timeout/429/5xx otwiera breaker, omija chorego providera, zamyka go po udanym probe i rejestruje każdą próbę.
 
-### Etap 5 — usage, koszt, budżet i Langfuse
+### Etap 6 — usage, oszczędności, budget lease i Langfuse
 
 - [ ] Kalkulator kosztu oparty o wersjonowane ceny modelu; Decimal, nie float.
-- [ ] Idempotentny `usage_ledger` po `request_id + attempt_id`.
-- [ ] Atomiczna rezerwacja szacowanego kosztu przed płatnym requestem i rozliczenie po rzeczywistym usage.
+- [ ] Partycjonowany miesięcznie `usage_ledger`, idempotentny po `request_id + attempt_id`, z raw/pruned/saved tokens, cache type i optimization flags.
+- [ ] Atomiczna rezerwacja szacowanego kosztu przez `budget_lease:*` z TTL 60 s, idempotentne settle/release i reconciler wygasłych lease'ów.
+- [ ] Kalkulacja `estimated_cost_saved` oddzielnie dla pruning, exact/semantic cache i free-first bez podwójnego zliczania.
 - [ ] Progi warning/hard stop per API key lub user; płatny ruch fail-closed przy niepewnym budżecie.
 - [ ] Langfuse trace/span z tierem, modelem, tokenami, kosztem, latency, cache, retry/fallback i decision ID; redakcja promptów domyślnie.
 
-**Odbiór:** równoległe requesty nie przekraczają hard limitu; duplikat callbacku nie nalicza kosztu dwa razy; awaria Langfuse nie przerywa inference.
+**Odbiór:** równoległe requesty nie przekraczają hard limitu; crash po rezerwacji nie pozostawia środków zablokowanych po TTL/reconciliation; duplikat callbacku nie nalicza kosztu dwa razy; suma breakdown oszczędności zgadza się z ledgerem; awaria Langfuse nie przerywa inference.
 
-### Etap 6 — exact cache
+### Etap 7 — exact i semantic cache
 
 - [ ] Kanoniczny serializer i wersjonowany cache key.
 - [ ] Eligibility rules, TTL per task i ochrona tenant namespace.
 - [ ] Stampede lock/single-flight dla identycznych requestów.
 - [ ] Zapis dopiero po udanej walidacji; błędów i częściowych streamów nie cache'ować.
 - [ ] Stats i bezpieczne purge po namespace/policy version.
+- [ ] Migracja `semantic_cache_entries` z pgvector, wersjonowanie modelu embeddingowego i polityki oraz tenant-scoped similarity search.
+- [ ] Eligibility/freshness rules, konfigurowalny próg, TTL i fallback do normalnego routingu przy awarii embeddingów/PostgreSQL.
 
-**Odbiór:** golden tests kluczy; hit omija providera i koszt; zmiana promptu/polityki/tenantu daje miss; Redis outage daje kontrolowany bypass.
+**Odbiór:** golden tests kluczy; exact/semantic hit omija LiteLLM i provider, ale nadal przechodzi auth, rate limit i ledger; zmiana promptu/polityki/tenantu lub wersji embeddingu daje miss; Redis/pgvector outage daje kontrolowany bypass; request z tool side effects nigdy nie daje semantic hit.
 
-### Etap 7 — dashboard MVP
+### Etap 8 — dashboard Agentic FinOps
 
 - [ ] Shell, routing lazy-load, logowanie/guard admina i interceptor correlation ID.
 - [ ] Overview: requests, tokeny, koszt, cache hit, free/paid, p50/p95, fallback i error rate.
@@ -267,10 +321,13 @@ Każdy etap kończy się działającym testem i osobnym małym commitem. Nie zac
 - [ ] Policies/Budgets: edycja profili i limitów.
 - [ ] Playground: logical alias/policy/streaming oraz actual model, tokeny, koszt, latency, cache i fallback.
 - [ ] Widok szczegółów RoutingDecision dla trace ID.
+- [ ] Efficiency: saved tokens i cost saved w czasie oraz breakdown pruning/exact/semantic/free-first.
+- [ ] Pruning trace: raw vs sent w formie zredagowanego diffu/metryk, z RBAC i krótką retencją treści.
+- [ ] Loop Alerts: sesja/tenant, wzorzec, licznik, czas blokady i trace ID bez ujawniania argumentów zawierających sekrety.
 
 **Odbiór:** admin może dodać i wyłączyć model/provider, ustawić budżet i zobaczyć efekt w następnym request; inference działa przy wyłączonym dashboardzie.
 
-### Etap 8 — hardening i wydanie MVP
+### Etap 9 — hardening i wydanie MVP
 
 - [ ] Hashowane identyfikatory kluczy, RBAC admin/user, restrykcyjne CORS, TLS przez Caddy i rate limits per key/tenant.
 - [ ] Redakcja PII/secrets w logach, błędach, audycie i telemetryce; testy negatywne.
@@ -286,36 +343,43 @@ Każdy etap kończy się działającym testem i osobnym małym commitem. Nie zac
 ### Unit
 
 - klasyfikacja/capability detection/token estimation,
+- pruning HTML/JSON/tool outputs z inwariantami historii oraz liczeniem raw/pruned/saved,
+- kanoniczne hashe i progi detekcji pętli, w tym wzorce naprzemienne,
 - każdy hard filter i każda składowa score,
-- deterministyczny ranking i fallback,
-- canonicalizacja/cache eligibility,
-- kalkulacja kosztu i przejścia budżetu,
+- deterministyczny ranking i kontrakt przekazania wybranego deploymentu do LiteLLM,
+- canonicalizacja oraz exact/semantic cache eligibility i freshness,
+- kalkulacja kosztu/oszczędności i przejścia budget lease,
 - redakcja danych wrażliwych.
 
 ### Integration
 
 - PostgreSQL migrations/repositories i optimistic locking,
-- Redis counters, locks, breaker i cache TTL,
-- LiteLLM hook z mock providerem,
+- Redis counters, locks, breaker, loop windows, budget lease i cache TTL,
+- pgvector migrations, tenant-scoped similarity lookup i wygasanie semantic cache,
+- Agent Gateway -> LiteLLM -> mock provider, bez pluginu routującego LiteLLM,
 - Langfuse callback przy sukcesie i niedostępności,
 - Control API auth/RBAC/audit/OpenAPI.
 
 ### E2E
 
 1. `auto` wybiera free dla prostego requestu.
-2. Wymagane tools/vision odrzucają niezgodny free model.
-3. Timeout/429 uruchamia fallback i zapisuje powód.
-4. Drugi identyczny request jest cache hitem.
-5. Hard budget blokuje płatny model, ale pozwala na darmowy.
-6. Wyłączenie modelu w UI wpływa na następny request.
-7. Streaming zachowuje format OpenAI i jeden trace.
-8. Restart usług nie usuwa konfiguracji; utrata Redis nie miesza tenantów.
+2. Stary, zastąpiony tool output jest bezpiecznie przycięty i raportuje oszczędność tokenów.
+3. Powtarzana sekwencja tool calls blokuje sesję przed LiteLLM, bez wpływu na inny tenant.
+4. Wymagane tools/vision odrzucają niezgodny free model.
+5. Timeout/429 uruchamia fallback w LiteLLM i zapisuje powód bez obejścia polityki Gatewaya.
+6. Drugi identyczny request jest exact hitem; podobne kwalifikujące się pytanie jest semantic hitem.
+7. Request narzędziowy lub zależny od czasu omija semantic cache.
+8. Hard budget blokuje płatny model, ale pozwala na darmowy; crash nie pozostawia lease'a po TTL.
+9. Wyłączenie modelu w UI wpływa na następny request.
+10. Streaming zachowuje format OpenAI, jeden trace i poprawne rozliczenie lease'a po disconnect.
+11. Restart usług nie usuwa konfiguracji; utrata Redis nie miesza tenantów.
+12. Bezpośredni dostęp do LiteLLM z zewnątrz jest niemożliwy.
 
 ## 9. Fazy po MVP
 
-### Faza 2 — redukcja kosztu
+### Faza 2 — rozszerzona redukcja kosztu
 
-Context trimming i strukturalne summaries, dynamiczne output budgets, normalized/semantic cache z pgvector, RAG, trial/expiry-aware routing, cost-avoided breakdown, profile `quality`/`realtime`, grupowe invalidation i provider prompt caching. Każda optymalizacja musi mieć metrykę bazową i test, że nie narusza freshness/tenant boundaries.
+Strukturalne summaries, dynamiczne output budgets, normalized cache, RAG, trial/expiry-aware routing, profile `quality`/`realtime`, grupowe invalidation i provider prompt caching. MVP zawiera już deterministyczny trimming, podstawowy semantic cache z pgvector i cost-avoided breakdown; faza 2 może je rozszerzać dopiero po pomiarach jakości. Każda optymalizacja musi mieć metrykę bazową i test, że nie narusza freshness/tenant boundaries.
 
 ### Faza 3 — routing jakościowy
 
@@ -328,13 +392,18 @@ Ollama/vLLM, batch queue, per-tenant billing/export, alerting, zaawansowany RBAC
 ## 10. Definition of Done MVP
 
 - [ ] Jeden OpenAI-compatible endpoint i logiczne aliasy bez znajomości providerów po stronie klienta.
+- [ ] Caddy kieruje `/v1/*` wyłącznie do FastAPI Agent Gateway, a LiteLLM nie jest publicznie osiągalny.
+- [ ] Deterministyczny pruning bezpiecznie redukuje stare tool outputs/HTML/JSON i raportuje raw/pruned/saved tokens.
+- [ ] Detekcja pętli w Redisie blokuje powtarzalne tool calls per tenant/session i generuje alert.
 - [ ] `model=auto` dynamicznie wybiera model z PostgreSQL i preferuje free, jeśli spełnia wymagania.
 - [ ] Provider/model można dodać i wyłączyć z dashboardu.
 - [ ] Capability, health, quota i budget filtering poprzedzają scoring.
 - [ ] Retry/fallback działa dla zdefiniowanych błędów i jest widoczny w trace.
 - [ ] Exact cache w Redisie jest bezpieczny tenantowo i mierzalny.
-- [ ] Budżet per API key lub user jest egzekwowany współbieżnie.
-- [ ] Usage, koszt i latency trafiają do ledger/dashboardu oraz Langfuse.
+- [ ] Semantic cache w PostgreSQL + pgvector ma opt-in, freshness rules i nigdy nie obsługuje requestów z side effects.
+- [ ] Budżet per API key lub user jest egzekwowany współbieżnie przez dzierżawy z TTL i reconciliation.
+- [ ] Partycjonowany usage ledger zapisuje usage, koszt, saved tokens, cost saved, cache type i optimization flags; dane trafiają do dashboardu oraz Langfuse.
+- [ ] Dashboard pokazuje efficiency, bezpieczny pruning trace i loop alerts.
 - [ ] Każda decyzja routingu ma trace ID i czytelne uzasadnienie.
 - [ ] PostgreSQL jest źródłem prawdy; inference nie zależy od dostępności Angulara ani Langfuse.
 - [ ] Compose uruchamia cały lokalny stack; migracje, seed, smoke, testy i backup są udokumentowane.
@@ -346,10 +415,10 @@ Ollama/vLLM, batch queue, per-tenant billing/export, alerting, zaawansowany RBAC
 2. Sprawdź `git status`, ostatnie commity i checklistę etapu. Nie zmieniaj cudzych, niezwiązanych modyfikacji.
 3. Wybierz pierwszy niezakończony punkt z najwcześniejszego rozpoczętego etapu. Nie implementuj funkcji z późniejszych faz „przy okazji”.
 4. Przed kodem zapisz lub zaktualizuj test akceptacyjny dla danego slice'a.
-5. Utrzymuj logikę domenową jako czyste funkcje; adaptery LiteLLM/DB/Redis/Langfuse nie mogą przenikać do scoringu.
+5. Utrzymuj logikę domenową jako czyste funkcje; adaptery LiteLLM/DB/Redis/Langfuse nie mogą przenikać do pruning, loop detection ani scoringu.
 6. Po zmianie uruchom najmniejszy trafny zestaw testów, potem `make check`; zaktualizuj checklistę tylko po faktycznym odbiorze.
 7. Jeśli odkryjesz sprzeczność architektoniczną, dodaj ADR zamiast budować drugi wariant rozwiązania.
 
 ### Najbliższe zadanie
 
-Rozpocząć **Etap 1** od podstawowego Compose: Caddy, Control API, dashboard, PostgreSQL i Redis. Langfuse dodać dopiero po uruchomieniu i przetestowaniu tego rdzenia.
+Kontynuować **Etap 1** od pionowego slice'a proxy-first zgodnie z ADR-0003: przepiąć Caddy `/v1/*` na FastAPI Agent Gateway, skierować Gateway do wewnętrznego LiteLLM i potwierdzić ścieżkę smoke testem. Następnie włączyć pgvector i dopiero później Langfuse.
