@@ -29,7 +29,7 @@ frontend-check:
 check: lint typecheck test frontend-check
 
 up:
-	$(COMPOSE) up -d --build --wait
+	$(COMPOSE) up -d --build --wait --remove-orphans
 
 smoke:
 	./scripts/smoke-stack.sh

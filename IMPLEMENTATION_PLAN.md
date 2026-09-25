@@ -239,14 +239,17 @@ Każdy etap kończy się działającym testem i osobnym małym commitem. Nie zac
 ### Etap 1 — migracja do Agent Gateway i lokalna infrastruktura (w toku)
 
 - [x] Bazowy Compose: Caddy, LiteLLM, Control API, dashboard, PostgreSQL, Redis i mock LLM.
-- [ ] Przekształcić `apps/control-api` w `apps/agent-gateway` (lub zachować ścieżkę przejściowo, lecz zmienić nazwę modułu/usługi) i dodać passthrough `/v1/chat/completions` oraz `/v1/models`.
-- [ ] Przełączyć Caddy `/v1/*` na Agent Gateway; LiteLLM pozostawić wyłącznie w sieci wewnętrznej i zablokować bezpośredni port hosta.
+- [x] Przekształcić `apps/control-api` w `apps/agent-gateway` (ścieżka źródeł pozostaje przejściowo bez zmian, nazwa usługi i aplikacji jest docelowa) i dodać passthrough `/v1/chat/completions` oraz `/v1/models`.
+- [x] Przełączyć Caddy `/v1/*` na Agent Gateway; LiteLLM pozostawić wyłącznie w sieci wewnętrznej i zablokować bezpośredni port hosta.
 - [x] Dodać ADR-0003 dla wiążącej topologii proxy-first i oznaczyć ADR-0001 jako superseded.
-- [ ] Zmienić obraz PostgreSQL na wariant z pgvector oraz dodać idempotentne `CREATE EXTENSION vector` w migracji bazy gateway.
+- [x] Zmienić obraz PostgreSQL na wariant z pgvector oraz dodać idempotentne `CREATE EXTENSION vector` w kroku migracyjnym bazy gateway.
 - [ ] Langfuse uruchamiać profilem `observability`; użyć aktualnego oficjalnego zestawu zależności (nie legacy v2).
 - [x] Health/readiness checks, trwałe named volumes, wewnętrzna sieć i minimalnie wystawione porty.
 - [x] `.env.example` bez prawdziwych sekretów oraz skrypt inicjalizujący bazy.
-- [ ] `make up`, `make down`, `make migrate`, `make seed`, `make smoke` (`up`, `down` i `smoke` gotowe; migracje i seed należą do Etapu 2).
+- [x] `make up`, `make down` i `make smoke` dla obecnego stacku.
+- [ ] `make migrate` i `make seed` po dodaniu migracji domenowych w Etapie 2.
+
+**Postęp 2026-09-25:** zweryfikowano non-stream i stream przez `Caddy -> Agent Gateway -> LiteLLM -> mock`, nagłówek diagnostyczny Gatewaya, brak opublikowanego portu LiteLLM oraz pgvector `0.8.1` w istniejącym wolumenie PostgreSQL.
 
 **Odbiór:** świeży checkout uruchamia stack jedną komendą; request przechodzi wyłącznie ścieżką `Caddy -> Agent Gateway -> LiteLLM -> mock`; bezpośredni LiteLLM jest niedostępny z hosta; migracje z `vector` są idempotentne, a restart zachowuje dane.
 

@@ -4,16 +4,15 @@ services:
   reverse-proxy:
     image: caddy:2.11.4-alpine
     restart: unless-stopped
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile", "--watch"]
     ports:
       - "127.0.0.1:${TOKEN_CENTER_PORT:-8080}:80"
     volumes:
       - ./infrastructure/reverse-proxy/Caddyfile:/etc/caddy/Caddyfile:ro
     depends_on:
-      control-api:
+      agent-gateway:
         condition: service_healthy
       dashboard:
-        condition: service_healthy
-      litellm:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
@@ -21,18 +20,22 @@ services:
       timeout: 3s
       retries: 5
 
-  control-api:
+  agent-gateway:
     build:
       context: .
       dockerfile: apps/control-api/Dockerfile
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://token_center:${POSTGRES_PASSWORD:-local-postgres-password}@postgres:5432/gateway
+      LITELLM_BASE_URL: ${LITELLM_BASE_URL:-http://litellm:4000}
+      LITELLM_TIMEOUT_SECONDS: ${LITELLM_TIMEOUT_SECONDS:-120}
       REDIS_URL: redis://redis:6379/0
     depends_on:
-      postgres:
-        condition: service_healthy
+      gateway-migrations:
+        condition: service_completed_successfully
       redis:
+        condition: service_healthy
+      litellm:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')"]
@@ -59,12 +62,10 @@ services:
     environment:
       LITELLM_DATABASE_URL: postgresql://token_center:${POSTGRES_PASSWORD:-local-postgres-password}@postgres:5432/litellm
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-local-development-only}
-      PYTHONPATH: /app/token-center
       REDIS_HOST: redis
       REDIS_PORT: "6379"
     volumes:
       - ./infrastructure/litellm/config.yaml:/app/config.yaml:ro
-      - ./packages/policy-engine/src:/app/token-center:ro
     depends_on:
       mock-llm:
         condition: service_healthy
@@ -92,7 +93,7 @@ services:
       retries: 10
 
   postgres:
-    image: postgres:18.6-alpine3.23
+    image: pgvector/pgvector:0.8.1-pg18-trixie
     restart: unless-stopped
     environment:
       POSTGRES_DB: gateway
@@ -106,6 +107,22 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+
+  gateway-migrations:
+    image: pgvector/pgvector:0.8.1-pg18-trixie
+    restart: "no"
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-local-postgres-password}
+    command:
+      - psql
+      - --host=postgres
+      - --username=token_center
+      - --dbname=gateway
+      - --set=ON_ERROR_STOP=1
+      - --command=CREATE EXTENSION IF NOT EXISTS vector;
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   redis:
     image: redis:8.10.1-alpine3.23

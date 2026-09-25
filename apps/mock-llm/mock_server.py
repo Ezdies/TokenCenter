@@ -21,6 +21,10 @@ class Handler(BaseHTTPRequestHandler):
         size = int(self.headers.get("Content-Length", "0"))
         request: dict[str, Any] = json.loads(self.rfile.read(size) or b"{}")
         model = str(request.get("model", "unknown"))
+        if request.get("stream") is True:
+            self._stream_chat_completion(model)
+            return
+
         self._json(
             200,
             {
@@ -49,6 +53,41 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _stream_chat_completion(self, model: str) -> None:
+        created = int(time.time())
+        chunks: list[dict[str, object]] = [
+            {
+                "id": "chatcmpl-token-center-spike",
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": f"mock:{model}"},
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl-token-center-spike",
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            },
+        ]
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        for chunk in chunks:
+            self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
+            self.wfile.flush()
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
 
 
 if __name__ == "__main__":

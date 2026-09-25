@@ -2,15 +2,14 @@
     encode zstd gzip
 
     handle_path /api/* {
-        reverse_proxy control-api:8000
+        reverse_proxy agent-gateway:8000
     }
 
     handle /v1/* {
-        reverse_proxy litellm:4000
+        reverse_proxy agent-gateway:8000
     }
 
     handle {
         reverse_proxy dashboard:80
     }
 }
-

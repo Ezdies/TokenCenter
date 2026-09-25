@@ -24,14 +24,14 @@ TokenCenter to rozwijana brama LLM FinOps. Specyfikacja znajduje się w
 
 ## Aktualny stan
 
-Zaimplementowany jest Etap 0 oraz rdzeń infrastruktury z Etapu 1:
+Zaimplementowany jest Etap 0 oraz proxy-first slice z Etapu 1:
 
-- szkielet Control API w FastAPI,
+- FastAPI Agent Gateway jako publiczny data plane i szkielet Control API,
 - szkielet dashboardu Angular,
 - pakiet Policy Engine,
-- działający spike pluginu routingu LiteLLM,
+- wewnętrzny LiteLLM jako adapter providerów,
 - mock providera zgodny z OpenAI Chat Completions API,
-- PostgreSQL i Redis z trwałymi wolumenami,
+- PostgreSQL 18 z pgvector 0.8.1 oraz Redis z trwałymi wolumenami,
 - Caddy jako jeden publiczny punkt wejścia,
 - testy i konfiguracja CI.
 
@@ -76,7 +76,7 @@ cp .env.example .env
 docker compose up -d --build --wait
 ```
 
-Pierwsze uruchomienie pobiera obrazy bazowe i buduje Control API oraz dashboard, dlatego trwa dłużej. Opcja `--wait` kończy polecenie dopiero po przejściu health checków.
+Pierwsze uruchomienie pobiera obrazy bazowe i buduje Agent Gateway oraz dashboard, dlatego trwa dłużej. Opcja `--wait` kończy polecenie dopiero po przejściu health checków.
 
 3. Sprawdź cały przepływ przez reverse proxy:
 
@@ -87,7 +87,7 @@ Pierwsze uruchomienie pobiera obrazy bazowe i buduje Control API oraz dashboard,
 Oczekiwany wynik:
 
 ```text
-Stack passed: dashboard, Control API, PostgreSQL, Redis, LiteLLM and mock provider are ready.
+Stack passed: dashboard, Agent Gateway, PostgreSQL with pgvector, Redis, internal LiteLLM and mock provider are ready.
 ```
 
 Po starcie cały system jest dostępny pod jednym adresem: <http://127.0.0.1:8080>.
@@ -95,10 +95,11 @@ Po starcie cały system jest dostępny pod jednym adresem: <http://127.0.0.1:808
 | Metoda | Adres | Funkcja |
 | --- | --- | --- |
 | `GET` | <http://127.0.0.1:8080/> | dashboard Angular |
-| `GET` | <http://127.0.0.1:8080/api/health/live> | liveness Control API |
-| `GET` | <http://127.0.0.1:8080/api/health/ready> | PostgreSQL + Redis readiness |
-| `GET` | <http://127.0.0.1:8080/api/docs> | Swagger UI Control API |
-| `POST` | `http://127.0.0.1:8080/v1/chat/completions` | OpenAI-compatible LiteLLM API |
+| `GET` | <http://127.0.0.1:8080/api/health/live> | liveness Agent Gatewaya |
+| `GET` | <http://127.0.0.1:8080/api/health/ready> | PostgreSQL + pgvector + Redis readiness |
+| `GET` | <http://127.0.0.1:8080/api/docs> | Swagger UI Agent Gateway / Control API |
+| `POST` | `http://127.0.0.1:8080/v1/chat/completions` | OpenAI-compatible Agent Gateway → LiteLLM |
+| `GET` | `http://127.0.0.1:8080/v1/models` | lista modeli przez Agent Gateway → LiteLLM |
 
 `/v1/chat/completions` nie jest stroną WWW. Otwarcie go w przeglądarce wykonuje request `GET` i poprawnie zwraca `405 Method Not Allowed`. Wywołaj go metodą `POST` z kluczem i JSON-em:
 
@@ -185,9 +186,9 @@ Wszystkie poniższe komendy należy wykonywać z głównego katalogu repozytoriu
 
 Po tych krokach można uruchamiać aplikacje i pełny zestaw kontroli lokalnych.
 
-## Ręczne uruchomienie Control API
+## Ręczne uruchomienie Agent Gatewaya
 
-Ta opcja jest przeznaczona do pracy nad backendem z hot reloadem. `DATABASE_URL` i `REDIS_URL` muszą wskazywać na dostępne z hosta instancje PostgreSQL i Redis. Domyślny główny Compose celowo nie wystawia ich portów publicznie.
+Ta opcja jest przeznaczona do pracy nad backendem z hot reloadem. `DATABASE_URL`, `REDIS_URL` i `LITELLM_BASE_URL` muszą wskazywać na dostępne usługi. Domyślny główny Compose celowo nie wystawia PostgreSQL, Redisa ani LiteLLM publicznie.
 
 ```bash
 uv run uvicorn control_api.main:app --host 127.0.0.1 --port 8000 --reload
@@ -348,7 +349,7 @@ docker compose -f infrastructure/docker/compose.spike.yml config --quiet
 | 8080 | cały stack przez Caddy | `make up` |
 | 4000 | LiteLLM spike | `make spike-up` |
 | 4200 | dashboard Angular | `npm start` |
-| 8000 | Control API | `uv run uvicorn ...` |
+| 8000 | Agent Gateway / Control API | `uv run uvicorn ...` |
 
 ## Najczęstsze problemy
 
@@ -374,7 +375,7 @@ Główny stack można wystawić na innym porcie przez `TOKEN_CENTER_PORT` w `.en
 
 ```bash
 make ps
-docker compose logs control-api postgres redis litellm
+docker compose logs agent-gateway postgres redis litellm
 ```
 
 Po poprawieniu problemu odtwórz stack:

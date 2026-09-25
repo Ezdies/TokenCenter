@@ -1,11 +1,12 @@
 [project]
 name = "control-api"
 version = "0.1.0"
-description = "TokenCenter administrative control plane"
+description = "TokenCenter Agent Gateway and administrative control plane"
 requires-python = ">=3.13,<3.14"
 dependencies = [
   "asyncpg==0.31.0",
   "fastapi==0.141.1",
+  "httpx==0.28.1",
   "policy-engine",
   "pydantic==2.13.5",
   "redis==8.1.0",
